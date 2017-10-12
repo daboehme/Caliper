@@ -1,4 +1,4 @@
-// Copyright (c) 2015, Lawrence Livermore National Security, LLC.  
+// Copyright (c) 2017, Lawrence Livermore National Security, LLC.  
 // Produced at the Lawrence Livermore National Laboratory.
 //
 // This file is part of Caliper.
@@ -30,8 +30,8 @@
 // WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
 // ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-///@file  OmptService.cpp
-///@brief Service for OpenMP Tools interface 
+/// \file  OmptService.cpp
+/// \brief Service for OpenMP Tools interface 
 
 #include "../CaliperService.h"
 
@@ -39,6 +39,8 @@
 
 #include "caliper/common/Log.h"
 #include "caliper/common/RuntimeConfig.h"
+
+#include "caliper/common/util/spinlock.hpp"
 
 #include <map>
 #include <mutex>
@@ -57,11 +59,6 @@ namespace
 //
 
 const ConfigSet::Entry configdata[] = {
-    { "environment_mapping", CALI_TYPE_BOOL, "false", 
-      "Perform thread environment mapping in OMPT module",
-      "Perform thread environment mapping in OMPT module.\n"
-      "  Use if default thread environment mapping (e.g. through pthread service) is unavailable" 
-    },
     { "capture_state", CALI_TYPE_BOOL, "true",
       "Capture the OpenMP runtime state on context queries",
       "Capture the OpenMP runtime state on context queries"
@@ -73,37 +70,35 @@ const ConfigSet::Entry configdata[] = {
     ConfigSet::Terminator
 };
 
-volatile bool                    finished    { false };
-bool                             enable_ompt { false };
-bool				 perm_off    { false };
-Attribute                        thread_attr { Attribute::invalid };
-Attribute                        state_attr  { Attribute::invalid };
-Attribute			 region_attr { Attribute::invalid };
+volatile bool          finished    { false };
+bool                   enable_ompt { false };
+bool		       perm_off    { false };
 
-std::mutex                       thread_env_lock;
-map<ompt_thread_id_t, Caliper::Scope*> thread_env; ///< Thread ID -> Environment
+Attribute              thread_attr { Attribute::invalid };
+Attribute              state_attr  { Attribute::invalid };
+Attribute	       region_attr { Attribute::invalid };
 
-map<ompt_state_t, string>        runtime_states;
+std::map<int, string>  runtime_states;
 
-ConfigSet                        config;
+ConfigSet              config;
 
+int                    thread_id;
+util::spinlock         thread_id_lock;
 
 // The OMPT interface function pointers
 
 struct OmptAPI {
-    ompt_set_callback_t    set_callback    { nullptr };
-    ompt_get_thread_id_t   get_thread_id   { nullptr };
-    ompt_get_state_t       get_state       { nullptr };
-    ompt_enumerate_state_t enumerate_state { nullptr };
+    ompt_set_callback_t     set_callback     { nullptr };
+    ompt_get_state_t        get_state        { nullptr };
+    ompt_enumerate_states_t enumerate_states { nullptr };
 
     bool
     init(ompt_function_lookup_t lookup) {
-        set_callback    = (ompt_set_callback_t)    (*lookup)("ompt_set_callback");
-        get_thread_id   = (ompt_get_thread_id_t)   (*lookup)("ompt_get_thread_id");
-        get_state       = (ompt_get_state_t)       (*lookup)("ompt_get_state");
-        enumerate_state = (ompt_enumerate_state_t) (*lookup)("ompt_enumerate_state");
+        set_callback     = (ompt_set_callback_t)     (*lookup)("ompt_set_callback");
+        get_state        = (ompt_get_state_t)        (*lookup)("ompt_get_state");
+        enumerate_states = (ompt_enumerate_states_t) (*lookup)("ompt_enumerate_states");
 
-        if (!set_callback || !get_thread_id || !get_state || !enumerate_state)
+        if (!set_callback || !get_state || !enumerate_states)
             return false;
 
         return true;
@@ -118,53 +113,21 @@ struct OmptAPI {
 // ompt_event_thread_begin
 
 void
-cb_event_thread_begin(ompt_thread_type_t type, ompt_thread_id_t thread_id)
+cb_event_thread_begin(ompt_thread_type_t type, ompt_data_t*)
 {
-    Caliper c;
+    // Set the thread id in the new environment. We have to make our own since OMPT abandoned it :-(
 
-    if (config.get("environment_mapping").to_bool() == true) {
-        // Create a new Caliper environment for each thread. 
-        // Record thread id -> environment id mapping for later use in get_environment()
+    std::lock_guard<util::spinlock>
+        g(thread_id_lock);
 
-        Caliper::Scope* ctx;
-
-        if (type == ompt_thread_initial)
-            ctx = c.default_scope(CALI_SCOPE_THREAD);
-        else
-            ctx = c.create_scope(CALI_SCOPE_THREAD);
-
-        std::lock_guard<std::mutex>
-            g(thread_env_lock);
-        
-        thread_env.insert(make_pair(thread_id, ctx));
-    }
-
-    // Set the thread id in the new environment
-
-    c.set(thread_attr, Variant(static_cast<int>(thread_id)));
+    Caliper().set(thread_attr, Variant(++thread_id));
 }
 
 // ompt_event_thread_end
 
 void
-cb_event_thread_end(ompt_thread_type_t type, ompt_thread_id_t thread_id)
+cb_event_thread_end(ompt_data_t*)
 {
-    if (finished || config.get("environment_mapping").to_bool() == false)
-        return;
-
-    Caliper::Scope* ctx { nullptr };
-
-    thread_env_lock.lock();
-    auto it = thread_env.find(thread_id);
-    
-    if (it != thread_env.end()) {
-        ctx = it->second;
-        thread_env.erase(it);
-    }
-    thread_env_lock.unlock();
-
-    if (ctx)
-        Caliper().release_scope(ctx);
 }
 
 // ompt_event_parallel_begin
@@ -172,10 +135,8 @@ cb_event_thread_end(ompt_thread_type_t type, ompt_thread_id_t thread_id)
 void
 cb_event_parallel_begin(ompt_thread_type_t type)
 {
-	if ( enable_ompt == true && !finished ) {
-		Caliper c;
-		c.begin(region_attr, Variant(CALI_TYPE_STRING, "parallel", 8));
-	}	
+    if (enable_ompt == true && !finished)
+        Caliper().begin(region_attr, Variant(CALI_TYPE_STRING, "parallel", 8));
 }
 
 // ompt_event_parallel_end
@@ -183,86 +144,96 @@ cb_event_parallel_begin(ompt_thread_type_t type)
 void
 cb_event_parallel_end(ompt_thread_type_t type)
 {
-	if ( enable_ompt == true && !finished ) {
-		Caliper c;
-		c.end(region_attr);
-	}
+    if (enable_ompt == true && !finished)
+        Caliper().end(region_attr);
 }
 
 // ompt_event_idle_begin
 
 void
-cb_event_idle_begin(ompt_thread_type_t type)
+cb_event_idle(ompt_scope_endpoint_t endpoint)
 {
-	if ( enable_ompt == true && !finished ) {
-		Caliper c;
-		c.begin(region_attr, Variant(CALI_TYPE_STRING, "idle", 4));
-	}	
+    if (enable_ompt == true && !finished) {
+        if (endpoint      == ompt_scope_begin)
+            Caliper().begin(region_attr, Variant(CALI_TYPE_STRING, "idle", 4));       
+        else if (endpoint == ompt_scope_end)
+            Caliper().end(region_attr);
+    }
 }
-
-// ompt_event_idle_end
-
-void
-cb_event_idle_end(ompt_thread_type_t type)
-{
-	if ( enable_ompt == true && !finished ) {
-		Caliper c;
-		c.end(region_attr);
-	}
-}
-
 
 // ompt_event_wait_barrier_begin
 
 void
-cb_event_wait_barrier_begin(ompt_thread_type_t type, ompt_thread_id_t thread_id)
+cb_event_sync_region(ompt_sync_region_kind_t kind,
+                     ompt_scope_endpoint_t   endpoint,
+                     ompt_data_t*            /*parallel_data*/,
+                     ompt_data_t*            /*task_data*/,
+                     const void*             /*codeptr_ra*/)
 {
-	if ( enable_ompt == true && !finished) {
-		Caliper c;
-		c.begin(region_attr, Variant(CALI_TYPE_STRING,"barrier",7));
-	}	
+    if (enable_ompt == true && !finished) {
+        if (endpoint == ompt_scope_begin)
+            switch (kind) {
+            case ompt_sync_region_barrier:
+                Caliper().begin(region_attr, Variant(CALI_TYPE_STRING, "barrier",   7));
+                break;
+            case ompt_sync_region_taskwait:
+                Caliper().begin(region_attr, Variant(CALI_TYPE_STRING, "taskwait",  8));
+                break;
+            case ompt_sync_region_taskgroup:
+                Caliper().begin(region_attr, Variant(CALI_TYPE_STRING, "taskgroup", 9));
+                break;
+            default:
+                Caliper().begin(region_attr, Variant(CALI_TYPE_STRING, "UNKNOWN",   7));
+                break;
+            }
+        else if (endpoint == ompt_scope_end)
+            Caliper().end(region_attr);
+    }
 }
 
-// ompt_event_wait_barrier_end
-
 void
-cb_event_wait_barrier_end(ompt_thread_type_t type, ompt_thread_id_t thread_id)
+cb_event_sync_region_wait(ompt_sync_region_kind_t /*kind*/,
+                          ompt_scope_endpoint_t   endpoint,
+                          ompt_data_t*            /*parallel_data*/,
+                          ompt_data_t*            /*task_data*/,
+                          const void*             /*codeptr_ra*/)
 {
-	if ( enable_ompt == true && !finished) {
-		Caliper c;
-		c.end(region_attr);
-	}
+    if (enable_ompt && !finished) {
+        if (endpoint == ompt_scope_begin)
+            Caliper().begin(region_attr, Variant(CALI_TYPE_STRING, "idle", 4));
+        else
+            Caliper().end(region_attr);
+    }
 }
 
 // ompt_event_control
 
 void
-cb_event_control(uint64_t command, uint64_t modifier)
+cb_event_control_tool(uint64_t command, uint64_t modifier, void* /*arg*/)
 {
     // Should react to enable / disable measurement commands.
     switch (command)
     {
-	    case 1 : // Start or restart monitoring
-		if ( perm_off == false && enable_ompt == false) {
-			enable_ompt = true;
-		}
-		break;
-	    case 2 : // Pause monitoring
-		if ( enable_ompt == true ) {
-			enable_ompt = false;
-		}
-		break;
-	    case 3 : // Flush buffers and continue monitoring
-		// To be iplemented if a case arises where we would want to do this.
-		break;
-	    case 4 : // Permanently turn off monitoring
-	    	perm_off = true;
-		enable_ompt = false;
-		break;
-	    default :
-		break;
-    }
-		    
+    case 1 : // Start or restart monitoring
+        if ( perm_off == false && enable_ompt == false) {
+            enable_ompt = true;
+        }
+        break;
+    case 2 : // Pause monitoring
+        if ( enable_ompt == true ) {
+            enable_ompt = false;
+        }
+        break;
+    case 3 : // Flush buffers and continue monitoring
+        // To be iplemented if a case arises where we would want to do this.
+        break;
+    case 4 : // Permanently turn off monitoring
+        perm_off = true;
+        enable_ompt = false;
+        break;
+    default :
+        break;
+    }		    
 }
 
 // ompt_event_runtime_shutdown
@@ -283,25 +254,6 @@ void
 finish_cb(Caliper*)
 {
     finished = true;
-}
-
-Caliper::Scope*
-get_thread_scope(Caliper* c, bool alloc) 
-{
-    Caliper::Scope* ctx = c->default_scope(CALI_SCOPE_THREAD);
-
-    if (!api.get_thread_id)
-        return ctx;
-
-    ompt_thread_id_t thread_id = (*api.get_thread_id)();
-
-    thread_env_lock.lock();
-    auto it = thread_env.find(thread_id);
-    if (it != thread_env.end())
-        ctx = it->second;
-    thread_env_lock.unlock();
-
-    return ctx;
 }
 
 void
@@ -330,30 +282,32 @@ register_ompt_callbacks(bool capture_events)
         return false;
 
     struct callback_info_t { 
-        ompt_event_t    event;
-        ompt_callback_t cbptr;
+        ompt_callbacks_t event;
+        ompt_callback_t  cbptr;
+        const char*      name;
     } basic_callbacks[] = {
-        { ompt_event_thread_begin,       (ompt_callback_t) &cb_event_thread_begin       },
-        { ompt_event_thread_end,         (ompt_callback_t) &cb_event_thread_end         },
-        { ompt_event_control,            (ompt_callback_t) &cb_event_control            }
-//        { ompt_event_runtime_shutdown, (ompt_callback_t) &cb_event_runtime_shutdown }
+        { ompt_callback_thread_begin,     (ompt_callback_t) &cb_event_thread_begin,     "thread_begin"     },
+        { ompt_callback_thread_end,       (ompt_callback_t) &cb_event_thread_end,       "thread_end"       },
+        { ompt_callback_control_tool,     (ompt_callback_t) &cb_event_control_tool,     "control_tool"     }
     }, event_callbacks[] = {
-	{ ompt_event_idle_begin,         (ompt_callback_t) &cb_event_idle_begin         },
-	{ ompt_event_idle_end,           (ompt_callback_t) &cb_event_idle_end           },
-	{ ompt_event_wait_barrier_begin, (ompt_callback_t) &cb_event_wait_barrier_begin },
-	{ ompt_event_wait_barrier_end,   (ompt_callback_t) &cb_event_wait_barrier_end   },
-	{ ompt_event_parallel_begin,     (ompt_callback_t) &cb_event_parallel_begin     },
-	{ ompt_event_parallel_end,       (ompt_callback_t) &cb_event_parallel_end       }
+	{ ompt_callback_parallel_begin,   (ompt_callback_t) &cb_event_parallel_begin,   "parallel_begin"   },
+	{ ompt_callback_parallel_end,     (ompt_callback_t) &cb_event_parallel_end,     "parallel_end"     },
+        { ompt_callback_sync_region,      (ompt_callback_t) &cb_event_sync_region,      "sync_region"      },
+        { ompt_callback_sync_region_wait, (ompt_callback_t) &cb_event_sync_region_wait, "sync_region_wait" },
+        { ompt_callback_idle,             (ompt_callback_t) &cb_event_idle,              "idle"            }
     };
 
     for ( auto cb : basic_callbacks ) 
-        if ((*api.set_callback)(cb.event, cb.cbptr) == 0)
+        if ((*api.set_callback)(cb.event, cb.cbptr) == 0) {
+            Log(0).stream() << "ompt: Error: Unable to register callback \"" << cb.name << "\"" << std::endl;
             return false;
-    
+        }
     if (capture_events)
         for ( auto cb : event_callbacks ) 
-            if ((*api.set_callback)(cb.event, cb.cbptr) == 0)
+            if ((*api.set_callback)(cb.event, cb.cbptr) == 0) {
+                Log(0).stream() << "ompt: Error: Unable to register callback \"" << cb.name << "\"" << std::endl;
                 return false;
+            }
 
     return true;
 }
@@ -361,13 +315,13 @@ register_ompt_callbacks(bool capture_events)
 bool 
 register_ompt_states()
 {
-    if (!api.enumerate_state)
+    if (!api.enumerate_states)
         return false;
 
-    ompt_state_t state = ompt_state_first;
-    const char*  state_name;
+    int         state = omp_state_undefined;
+    const char* state_name;
 
-    while ((*api.enumerate_state)(state, (int*) &state, &state_name))
+    while ((*api.enumerate_states)(state, &state, &state_name))
         runtime_states[state] = state_name;
 
     return true;
@@ -392,38 +346,28 @@ omptservice_initialize(Caliper* c)
                             CALI_ATTR_SCOPE_THREAD | CALI_ATTR_SKIP_EVENTS);
     region_attr =
 	c->create_attribute("ompt.region",    CALI_TYPE_STRING,
-			    CALI_ATTR_SCOPE_THREAD);
-
-    if (config.get("environment_mapping").to_bool() == true)
-        c->set_scope_callback(CALI_SCOPE_THREAD, &get_thread_scope);
+			    CALI_ATTR_SCOPE_THREAD | CALI_ATTR_NESTED);
 
     c->events().finish_evt.connect(&finish_cb);
 
-    Log(1).stream() << "Registered OMPT service" << endl;
+    Log(1).stream() << "Registered OMPT service." << std::endl;
 }
-
-}  // namespace [ anonymous ]
-
-
-extern "C" {
 
 // The OpenMP tools interface intialization function, called by the OpenMP 
 // runtime. We must register our callbacks w/ the OpenMP runtime here.
 
-void
-ompt_initialize_real(ompt_function_lookup_t lookup,
-                     const char*            runtime_version,
-                     unsigned int           /* ompt_version */)
+int
+cali_ompt_initialize(ompt_function_lookup_t lookup, ompt_fns_t*)
 {
-    Log(1).stream() << "Initializing OMPT interface with " << runtime_version << endl;
+    Log(1).stream() << "ompt: Initializing OMPT interface." << std::endl;
 
     Caliper c;
     
     // register callbacks
 
     if (!::api.init(lookup) || !::register_ompt_callbacks(::config.get("capture_events").to_bool())) {
-        Log(0).stream() << "Callback registration error: OMPT interface disabled" << endl;
-        return;
+        Log(0).stream() << "ompt: Callback registration error: OMPT interface disabled" << endl;
+        return 0;
     }
 
     if (::config.get("capture_state").to_bool() == true) {
@@ -432,42 +376,40 @@ ompt_initialize_real(ompt_function_lookup_t lookup,
     }
 
     // set default thread ID
-    if (::api.get_thread_id)
-        c.set(thread_attr, Variant(static_cast<int>((*api.get_thread_id)())));
+    c.set(thread_attr, Variant(0));
         
-    Log(1).stream() << "OMPT interface enabled." << endl;
-}
-    
-// Old version of initialization interface. 
+    Log(1).stream() << "ompt: OMPT interface enabled." << endl;
 
-int 
-ompt_initialize(ompt_function_lookup_t lookup,
-                const char*            runtime_version,
-                unsigned int           ompt_version)
-{
-    // Make sure Caliper is initialized & OMPT service is enabled in Caliper config
-
-    Caliper c;
-
-    if (!::enable_ompt)
-        return 0;
-
-    ompt_initialize_real(lookup, runtime_version, ompt_version);
-    
     return 1;
 }
 
-// New version of the initialization interface; returns NULL or real init fn
-// if we want to enable OMPT
-
-// The tech report calls it ompt_initialize_fn_t, but the Intel header does not ...
-ompt_initialize_t
-ompt_tool(void)
+void
+cali_ompt_finalize(ompt_fns_t*)
 {
+    finished = true;
+}
+
+ompt_fns_t cali_ompt_fns { cali_ompt_initialize, cali_ompt_finalize };
+
+}  // namespace [ anonymous ]
+
+
+extern "C" {
+
+// The tool entry point called by OMPT. Return our initialize/finalize
+//   functions here if ompt service is enabled.
+ompt_fns_t*
+ompt_start_tool(unsigned int ompt_version, const char* runtime_version)
+{
+    Log(1).stream() << "Caliper OMPT entry function invoked from " << runtime_version << std::endl;
+
     // Make sure Caliper is initialized & OMPT service is enabled    
     Caliper::instance();
+
+    if (!::enable_ompt)
+        return NULL;
     
-    return ::enable_ompt ? ompt_initialize_real : NULL;
+    return ::enable_ompt ? &::cali_ompt_fns : NULL;
 }
     
 } // extern "C"
