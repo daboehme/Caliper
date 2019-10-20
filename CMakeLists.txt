@@ -249,22 +249,6 @@ endif()
 set(THREADS_PREFER_PTHREAD_FLAG On)
 find_package(Threads REQUIRED)
 
-if (WITH_OMPT)
-  # Find OMPT header
-  find_path(OMPT_INCLUDE_DIR ompt.h
-    PATH_SUFFIXES include
-    HINTS $ENV{OMPT_DIR} ${OMPT_DIR})
-
-  if (OMPT_INCLUDE_DIR)
-    set(OMPT_FOUND TRUE)
-    set(CALIPER_HAVE_OMPT TRUE)
-    set(CALIPER_OMPT_CMAKE_MSG "Yes, using ${OMPT_INCLUDE_DIR}")
-  else()
-    message(WARNING "OpenMP tools interface (OMPT) support requested but ompt.h not found!\n"
-      "Set OMPT_DIR to OpenMP tools interface installation directory and re-run cmake.")
-  endif()
-endif()
-
 # Find MPI
 if (WITH_MPI)
   find_package(MPI)
@@ -287,6 +271,10 @@ if (WITH_MPI)
   endif()
 endif()
 
+if (WITH_OMPT)
+  set(CALIPER_HAVE_OMPT TRUE)
+  set(CALIPER_OMPT_CMAKE_MSG "Yes")
+endif()
 
 if(WITH_TAU)
   if (CALIPER_HAVE_MPI)
