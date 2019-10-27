@@ -209,6 +209,8 @@ int initialize_ompt(ompt_function_lookup_t lookup, int initial_device_num, ompt_
 
     setup_callbacks();
 
+    Log(1).stream() << "OMPT support initialized" << std::endl;
+
     return 42;
 }
 
