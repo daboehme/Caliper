@@ -65,6 +65,7 @@ add_caliper_option(WITH_PAPI      "Enable PAPI hardware counter service (require
 add_caliper_option(WITH_LIBPFM    "Enable libpfm (perf_event) sampling" FALSE)
 add_caliper_option(WITH_LIBDW     "Enable libdw support (for symbollookup service)" FALSE)
 add_caliper_option(WITH_LIBUNWIND "Enable libunwind support (for callpath service)" FALSE)
+add_caliper_option(WITH_LDMS      "Enable LDMS service" TRUE)
 add_caliper_option(WITH_MPI       "Enable MPI" FALSE)
 # add_caliper_option(WITH_MPIT      "Enable MPI-T" FALSE)
 add_caliper_option(WITH_OMPT      "Enable OMPT" FALSE)
@@ -226,6 +227,16 @@ if (WITH_PAPI)
   else()
     message(WARNING "PAPI support was requested but PAPI was not found!\n"
   "Set PAPI_PREFIX to the PAPI installation path and re-run cmake.")
+  endif()
+endif()
+
+if (WITH_LDMS)
+  # find_package(ldms) ... ?
+  set(LDMS_FOUND TRUE)
+  if (LDMS_FOUND)
+     set(CALIPER_HAVE_LDMS TRUE)
+     set(CALIPER_LDMS_CMAKE_MSG "Yes")
+     # list(APPEND CALIPER_EXTERNAL_LIBS ${LDMS_LIBRARIES})
   endif()
 endif()
 
@@ -517,6 +528,7 @@ set(CALIPER_MODULES
   adiak
   GOTCHA
   PAPI
+  LDMS
   Libdw
   Libpfm
   Libunwind
