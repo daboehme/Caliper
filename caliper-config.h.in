@@ -20,6 +20,7 @@
 #cmakedefine CALIPER_HAVE_ADIAK
 #cmakedefine CALIPER_HAVE_PCP
 #cmakedefine CALIPER_HAVE_ROCTX
+#cmakedefine CALIPER_HAVE_ROCTRACER
 
 #cmakedefine CALIPER_REDUCED_CONSTEXPR_USAGE
 
