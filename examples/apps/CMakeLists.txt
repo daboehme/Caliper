@@ -18,8 +18,9 @@ set(CALIPER_CXX_EXAMPLE_APPS
 set(CALIPER_MPI_EXAMPLE_APPS
   collective-output-channel)
 set(CALIPER_C_EXAMPLE_APPS
+  cali-print-snapshot
   c-example
-  cali-print-snapshot)
+  test_ldms)
 set(CALIPER_Fortran_EXAMPLE_APPS
   fortran-example
   fortran-regionprofile)
@@ -59,3 +60,5 @@ target_link_libraries(cali-memtracking
   caliper-tools-util)
 target_link_libraries(cali-memtracking-macros
   caliper-tools-util)
+target_link_libraries(test_ldms
+  MPI::MPI_C)

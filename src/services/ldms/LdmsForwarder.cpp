@@ -21,10 +21,16 @@ using namespace cali;
 namespace
 {
 
-std::ostream& write_to_json(std::ostream& os, std::map<std::string, double> region_times) {
+std::ostream& write_to_json(std::ostream& os, int rank, std::map<std::string, double> region_times) {
     os << "{ ";
 
     int c = 0;
+
+    if (rank >= 0) {
+        os << "\"rank\": " << rank;
+        ++c;
+    }
+
     for (auto p : region_times)
         util::write_esc_string(os << (c++ > 0 ? ", \"" : "\""), p.first) << "\": " << p.second;
 
@@ -40,13 +46,16 @@ class LdmsForwarder
 
     std::string   filename;
 
-    void snapshot(Caliper*, Channel*) {
+    void snapshot(Caliper* c, Channel*) {
         std::map<std::string, double> region_times;
 
         std::tie(region_times, std::ignore, std::ignore) =
             profile.inclusive_region_times();
 
-        write_to_json(*stream.stream(), region_times) << "\n";
+        Entry e = c->get(c->get_attribute("mpi.rank"));
+        int rank = e.is_empty() ? -1 : e.value().to_int();
+
+        write_to_json(*stream.stream(), rank, region_times) << "\n";
 
         profile.clear(); // reset profile - skip to create a cumulative profile
     }
