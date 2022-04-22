@@ -9,7 +9,7 @@ using namespace cali;
 
 __global__ void kernel(int n, int* res)
 {
-    auto inner = cudatrace::register_region(5, "inner");
+    auto inner = cudatrace::register_region(5, "inner"); // arguments: string length, region name
     auto outer = cudatrace::begin_region(5, "outer");
 
     for (int i = 0; i < n; ++i) {
