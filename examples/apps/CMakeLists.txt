@@ -23,6 +23,8 @@ set(CALIPER_C_EXAMPLE_APPS
 set(CALIPER_Fortran_EXAMPLE_APPS
   fortran-example
   fortran-regionprofile)
+set(CALIPER_CUDA_EXAMPLE_APPS
+  cudatrace-example)
 
 foreach(app ${CALIPER_CXX_EXAMPLE_APPS})
   add_executable(${app} ${app}.cpp)
@@ -45,12 +47,21 @@ if (CALIPER_HAVE_MPI)
     target_link_libraries(${app} caliper ${MPI_CXX_LIBRARIES})
   endforeach()
 endif()
-  
+
 if (WITH_FORTRAN)
   foreach(app ${CALIPER_Fortran_EXAMPLE_APPS})
     add_executable(${app} ${app}.f)
     set_source_files_properties(${app}.f PROPERTIES Fortran_FORMAT FREE)
     target_include_directories(${app} PRIVATE ${CMAKE_Fortran_MODULE_DIRECTORY})
+    target_link_libraries(${app} caliper)
+  endforeach()
+endif()
+
+if (CALIPER_HAVE_CUDATRACE)
+  foreach(app ${CALIPER_CUDA_EXAMPLE_APPS})
+    add_executable(${app} ${app}.cu)
+    set_target_properties(${app} PROPERTIES 
+      CUDA_SEPARABLE_COMPILATION ON)
     target_link_libraries(${app} caliper)
   endforeach()
 endif()

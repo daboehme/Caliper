@@ -73,6 +73,15 @@ add_library(caliper ${CALIPER_ALL_OBJS})
 set_target_properties(caliper PROPERTIES SOVERSION ${CALIPER_MAJOR_VERSION})
 set_target_properties(caliper PROPERTIES VERSION ${CALIPER_VERSION})
 
+if (CALIPER_HAVE_CUDATRACE)
+  set_target_properties(caliper-serial PROPERTIES 
+    CUDA_ARCHITECTURES "70"
+    CUDA_SEPARABLE_COMPILATION ON)
+  set_target_properties(caliper PROPERTIES 
+    CUDA_ARCHITECTURES "70"
+    CUDA_SEPARABLE_COMPILATION ON)
+endif()
+
 target_include_directories(
   caliper
   INTERFACE

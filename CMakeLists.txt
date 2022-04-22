@@ -60,6 +60,7 @@ option(CMAKE_INSTALL_RPATH_USE_LINK_PATH "Add rpath for all dependencies" TRUE)
 add_caliper_option(WITH_TOOLS     "Build Caliper tools" TRUE)
 
 add_caliper_option(WITH_NVTX      "Enable NVidia nvtx bindings for NVprof and NSight (requires CUDA)" FALSE)
+add_caliper_option(WITH_CUDATRACE "Enable CUDA device-side tracing API" FALSE)
 add_caliper_option(WITH_CUPTI     "Enable CUPTI service (CUDA performance analysis)" FALSE)
 add_caliper_option(WITH_PAPI      "Enable PAPI hardware counter service (requires papi)" FALSE)
 add_caliper_option(WITH_LIBPFM    "Enable libpfm (perf_event) sampling" FALSE)
@@ -187,6 +188,16 @@ if (WITH_NVTX)
   endif()
 endif()
 
+if (WITH_CUDATRACE)
+  enable_language(CUDA)
+  find_package(CUDAToolkit REQUIRED)
+  if (CUDAToolkit_FOUND)
+    list(APPEND CALIPER_EXTERNAL_LIBS CUDA::cudart)
+    set(CALIPER_HAVE_CUDATRACE ON)
+    set(CALIPER_CUDATrace_CMAKE_MSG "Yes")
+  endif()
+endif()
+
 if(WITH_CUPTI)
   if (CMAKE_VERSION VERSION_GREATER_EQUAL 3.17)
     find_package(CUDAToolkit REQUIRED)
@@ -203,7 +214,7 @@ if(WITH_CUPTI)
           ${CUDAToolkit_TARGET_DIR}/extras/CUPTI/include)
       list(APPEND CALI_CUPTI_INCLUDE_DIRS ${_real_cupti_include_dir})
       list(REMOVE_DUPLICATES CALI_CUPTI_INCLUDE_DIRS)
-      if (BUILD_SHARED_LIBS)
+      if (BUILD_SHARED_LIBS OR NOT TARGET CUDA::cupti_static)
         list(APPEND CALIPER_EXTERNAL_LIBS CUDA::cupti)
       else()
         find_library(RT_LIB rt REQUIRED)
@@ -481,6 +492,8 @@ if(INSTALL_HEADERS)
     FILES_MATCHING PATTERN "*.h")
   install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
     FILES_MATCHING PATTERN "*.hpp")
+  install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    FILES_MATCHING PATTERN "*.cuh")
 
   install(FILES ${PROJECT_BINARY_DIR}/include/caliper/caliper-config.h
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/caliper)
@@ -568,6 +581,7 @@ set(CALIPER_MODULES
   MPIT
   OMPT
   Nvtx
+  CUDATrace
   CUpti
   Kokkos
   RocTracer
