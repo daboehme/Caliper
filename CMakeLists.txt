@@ -79,6 +79,7 @@ add_caliper_option(WITH_PCP       "Enable performance co-pilot support" FALSE)
 add_caliper_option(WITH_VARIORUM  "Enable Variorum support" FALSE)
 add_caliper_option(WITH_UMPIRE    "Enable Umpire statistics support" FALSE)
 add_caliper_option(WITH_CRAYPAT   "Enable CrayPAT region forwarding support" FALSE)
+add_caliper_option(WITH_LDMS      "Enable LDMS forwarder" TRUE)
 
 add_caliper_option(USE_EXTERNAL_GOTCHA "Use pre-installed gotcha instead of building our own" FALSE)
 
@@ -462,6 +463,11 @@ if (WITH_UMPIRE)
   list(APPEND CALIPER_EXTERNAL_LIBS umpire)
 endif()
 
+if (WITH_LDMS)
+  set(CALIPER_HAVE_LDMS TRUE)
+  set(CALIPER_LDMS_CMAKE_MSG "Yes")
+endif()
+
 # PGI 17.x has issues with some constexpr constructors
 if(CMAKE_CXX_COMPILER_ID MATCHES PGI)
   set(CALIPER_REDUCED_CONSTEXPR_USAGE TRUE)
@@ -584,7 +590,8 @@ set(CALIPER_MODULES
   histogram
   variorum
   umpire
-  CrayPAT)
+  CrayPAT
+  LDMS)
 
 foreach(_caliper_module ${CALIPER_MODULES})
   string(LENGTH "${_caliper_module}" _strlen)
