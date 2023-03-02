@@ -41,9 +41,10 @@ std::ostream& write_ldms_record(std::ostream& os, int mpi_rank, RegionProfile& p
         if (p.second < 0.05 * total_time)
             continue;
 
-        os << "{ \"timestamp\": " << std::fixed << unix_ts;
+        os << "{ \"timestamp\": " << std::fixed << unix_ts
+           << ", \"duration\": "  << std::fixed << p.second;
 
-        util::write_esc_string(os << ", \"", p.first) << "\": " << std::fixed << p.second;
+        util::write_esc_string(os << ", \"region\": \"", p.first) << "\"";
 
         if (mpi_rank >= 0)
             os << ", \"rank\": " << mpi_rank;
