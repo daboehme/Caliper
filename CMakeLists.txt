@@ -70,6 +70,7 @@ add_caliper_option(WITH_GOTCHA    "Enable GOTCHA wrapping" ${CALIPER_HAVE_LINUX}
 add_caliper_option(WITH_ROCTX     "Enable AMD RocTX support" FALSE)
 add_caliper_option(WITH_ROCTRACER "Enable AMD RocTracer support" FALSE)
 add_caliper_option(WITH_ROCM      "Enable AMD RocTracer and RocTX support" FALSE)
+add_caliper_option(WITH_ROCMTOOLS "Enable AMD RocmTools support" FALSE)
 add_caliper_option(WITH_SOS       "Enable SOSFlow data management" FALSE)
 add_caliper_option(WITH_TAU       "Enable TAU service (TAU Performance System)" FALSE)
 add_caliper_option(WITH_VTUNE     "Enable Intel(R) VTune(tm) annotation bindings" FALSE)
@@ -383,6 +384,17 @@ if (WITH_ROCTRACER OR WITH_ROCM)
   endif()
 endif()
 
+if (WITH_ROCMTOOLS)
+  include(FindRocmtools)
+  if (ROCMTOOLS_FOUND)
+    set(CALIPER_HAVE_ROCMTOOLS TRUE)
+    set(CALIPER_RocmTools_CMAKE_MSG "Yes, using ${ROCMTOOLS_LIBRARIES}")
+    list(APPEND CALIPER_EXTERNAL_LIBS ${ROCMTOOLS_LIBRARIES})
+  else()
+    message(WARNING "RocmTools support requested but rocmtools was not found!")
+  endif()
+endif()
+
 if (WITH_CRAYPAT)
   include(FindCrayPAT)
   if (CRAYPAT_FOUND)
@@ -576,6 +588,7 @@ set(CALIPER_MODULES
   Nvtx
   CUpti
   Kokkos
+  RocmTools
   RocTracer
   RocTX
   TAU
