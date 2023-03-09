@@ -35,14 +35,35 @@ void print_rocm_error(Channel* channel, const char* msg, rocmtools_status_t s)
         << "\n";
 }
 
+const char* activity_domain_name(rocmtools_tracer_activity_domain_t id)
+{
+    switch (id) {
+        case ACTIVITY_DOMAIN_HIP_API:
+            return "hip_api";
+        case ACTIVITY_DOMAIN_HIP_OPS:
+            return "hip_ops";
+        case ACTIVITY_DOMAIN_HSA_API:
+            return "hsa_api";
+        case ACTIVITY_DOMAIN_HSA_OPS:
+            return "hsa_ops";
+        case ACTIVITY_DOMAIN_ROCTX:
+            return "roctx";
+        default:
+            return nullptr;
+    }
+}
+
 class RocmService
 {
+    Attribute m_domain_attr;
     Attribute m_api_attr;
+    Attribute m_kernel_name_attr;
     Attribute m_begin_ts_attr;
     Attribute m_end_ts_attr;
     Attribute m_duration_attr;
     Attribute m_host_timestamp_attr;
     Attribute m_host_duration_attr;
+    Attribute m_correlation_attr;
 
     Channel*  m_channel;
 
@@ -52,8 +73,14 @@ class RocmService
     static RocmService* s_instance;
 
     void create_attributes(Caliper* c) {
+        m_domain_attr =
+            c->create_attribute("rocm.domain", CALI_TYPE_STRING,
+                CALI_ATTR_DEFAULT | CALI_ATTR_SKIP_EVENTS);
         m_api_attr =
             c->create_attribute("rocm.hip.api", CALI_TYPE_STRING,
+                CALI_ATTR_DEFAULT | CALI_ATTR_SKIP_EVENTS);
+        m_kernel_name_attr =
+            c->create_attribute("rocm.kernel.name", CALI_TYPE_STRING,
                 CALI_ATTR_DEFAULT | CALI_ATTR_SKIP_EVENTS);
         m_begin_ts_attr =
             c->create_attribute("rocm.starttime", CALI_TYPE_UINT,
@@ -64,6 +91,9 @@ class RocmService
         m_duration_attr =
             c->create_attribute("rocm.activity.duration", CALI_TYPE_UINT,
                 CALI_ATTR_ASVALUE | CALI_ATTR_SKIP_EVENTS | CALI_ATTR_AGGREGATABLE);
+        m_correlation_attr =
+            c->create_attribute("rocm.correlation_id", CALI_TYPE_UINT,
+                CALI_ATTR_ASVALUE | CALI_ATTR_SKIP_EVENTS);
 
         m_host_timestamp_attr =
             c->create_attribute("rocm.host.timestamp", CALI_TYPE_UINT,
@@ -78,7 +108,7 @@ class RocmService
                                 CALI_ATTR_AGGREGATABLE);
     }
 
-    void handle_trace_record(rocmtools_record_tracer_t record, rocmtools_session_id_t session) {
+    void handle_sync_api_trace_record(rocmtools_record_tracer_t record, rocmtools_session_id_t session) {
         if (record.domain == ACTIVITY_DOMAIN_HIP_API) {
             size_t function_name_size = 0;
             rocmtools_query_hip_tracer_api_data_info_size(
@@ -91,27 +121,83 @@ class RocmService
                     session, ROCMTOOLS_HIP_FUNCTION_NAME, record.api_data_handle,
                     record.operation_id, &cptr);
 
-                FixedSizeSnapshotRecord<4> rec;
-                Caliper c;
-
                 uint64_t duration = record.timestamps.end.value - record.timestamps.begin.value;
 
-                const Attribute attr[4] = {
+                const Attribute attr[5] = {
                     m_api_attr,
                     m_begin_ts_attr,
                     m_end_ts_attr,
-                    m_duration_attr
+                    m_duration_attr,
+                    m_correlation_attr
                 };
-                const Variant data[4] = {
+                const Variant data[5] = {
                     Variant(CALI_TYPE_STRING, cptr, function_name_size),
                     cali_make_variant_from_uint(record.timestamps.begin.value),
                     cali_make_variant_from_uint(record.timestamps.end.value),
-                    cali_make_variant_from_uint(duration)
+                    cali_make_variant_from_uint(duration),
+                    cali_make_variant_from_uint(record.correlation_id.value)
                 };
 
-                c.make_record(4, attr, data, rec.builder());
+                FixedSizeSnapshotRecord<5> rec;
+                Caliper c;
+
+                c.make_record(5, attr, data, rec.builder());
                 c.push_snapshot(m_channel, rec.view());
             }
+        }
+    }
+
+    void handle_trace_record(rocmtools_record_tracer_t trec, rocmtools_session_id_t session) {
+        std::string kernel_name;
+        std::string function_name;
+
+        if (trec.domain == ACTIVITY_DOMAIN_HIP_OPS) {
+            const char* name = reinterpret_cast<const char*>(trec.api_data_handle.handle);
+
+            if (name)
+                kernel_name = util::demangle(name);
+        }
+
+        if (trec.domain == ACTIVITY_DOMAIN_HIP_API) {
+            size_t function_name_size = 0;
+            rocmtools_query_hip_tracer_api_data_info_size(
+                session, ROCMTOOLS_HIP_FUNCTION_NAME, trec.api_data_handle,
+                trec.operation_id, &function_name_size);
+
+            if (function_name_size > 1) {
+                char* cptr = nullptr;
+                rocmtools_query_hip_tracer_api_data_info(
+                    session, ROCMTOOLS_HIP_FUNCTION_NAME, trec.api_data_handle,
+                    trec.operation_id, &cptr);
+                function_name = cptr;
+            }
+        }
+
+        Caliper c;
+
+        cali::Node* node = nullptr;
+        const char* activity_name = activity_domain_name(trec.domain);
+
+        if (activity_name)
+            node = c.make_tree_entry(m_domain_attr, Variant(activity_name));
+        if (function_name.size() > 0)
+            node = c.make_tree_entry(m_api_attr, Variant(function_name.c_str()));
+        if (kernel_name.size() > 0)
+            node = c.make_tree_entry(m_kernel_name_attr, Variant(kernel_name.c_str()), node);
+
+        if (node) {
+            FixedSizeSnapshotRecord<5> rec;
+
+            rec.builder().append(Entry(node));
+
+            uint64_t duration = trec.timestamps.end.value - trec.timestamps.begin.value;
+
+            rec.builder().append(m_begin_ts_attr, cali_make_variant_from_uint(trec.timestamps.begin.value));
+            rec.builder().append(m_end_ts_attr, cali_make_variant_from_uint(trec.timestamps.end.value));
+            rec.builder().append(m_duration_attr, cali_make_variant_from_uint(duration));
+            rec.builder().append(m_correlation_attr, cali_make_variant_from_uint(trec.correlation_id.value));
+
+            m_channel->events().process_snapshot(&c, m_channel, SnapshotView(), rec.view());
         }
     }
 
@@ -119,7 +205,7 @@ class RocmService
             rocmtools_session_id_t session_id, rocmtools_buffer_id_t buffer_id) {
         unsigned count = 0;
 
-        while (record < end) {
+        for ( ; record < end; rocmtools_next_record(record, &record, session_id, buffer_id)) {
             switch (record->kind) {
             case ROCMTOOLS_TRACER_RECORD:
             {
@@ -142,17 +228,20 @@ class RocmService
                     rocmtools_session_id_t session_id, rocmtools_buffer_id_t buffer_id) {
                         s_instance->flush_records(record, end_record, session_id, buffer_id);
                     },
-                    0x0, &m_buffer_id);
+                    0x800000, &m_buffer_id);
         if (ret != ROCMTOOLS_STATUS_SUCCESS) {
             print_rocm_error(channel, "rocmtools_create_buffer()", ret);
             return;
         }
 
-        rocmtools_tracer_activity_domain_t filter = ACTIVITY_DOMAIN_HIP_API;
+        rocmtools_tracer_activity_domain_t filters[2] = {
+            ACTIVITY_DOMAIN_HIP_API,
+            ACTIVITY_DOMAIN_HIP_OPS
+        };
 
         rocmtools_filter_id_t api_filter_id;
         ret = rocmtools_create_filter(m_session_id, ROCMTOOLS_API_TRACE,
-            rocmtools_filter_data_t { &filter }, 1,
+            rocmtools_filter_data_t { filters }, 2,
             &api_filter_id, rocmtools_filter_property_t {});
         if (ret != ROCMTOOLS_STATUS_SUCCESS) {
             print_rocm_error(channel, "rocmtools_create_filter()", ret);
@@ -174,7 +263,18 @@ class RocmService
             return;
         }
 
-        Log(1).stream() << channel->name() << ": rocmtools API tracing session initialized\n";
+        rocmtools_filter_id_t kernel_filter_id;
+        ret = rocmtools_create_filter(m_session_id, ROCMTOOLS_DISPATCH_TIMESTAMPS_COLLECTION,
+                rocmtools_filter_data_t {}, 0, &kernel_filter_id, rocmtools_filter_property_t {});
+        if (ret != ROCMTOOLS_STATUS_SUCCESS) {
+            print_rocm_error(channel, "rocmtools_create_filter", ret);
+        }
+        ret = rocmtools_set_filter_buffer(m_session_id, kernel_filter_id, m_buffer_id);
+        if (ret != ROCMTOOLS_STATUS_SUCCESS) {
+            print_rocm_error(channel, "rocmtools_filter_set_buffer", ret);
+        }
+
+        Log(1).stream() << channel->name() << ": rocmtools: API tracing session initialized\n";
     }
 
     void snapshot_cb(Caliper* c, SnapshotBuilder& rec) {
@@ -207,7 +307,14 @@ class RocmService
                 s_instance->snapshot_cb(c, rec);
             });
 
-        Log(1).stream() << channel->name() << ": rocmtools session started\n";
+        Log(1).stream() << channel->name() << ": rocmtools: session started\n";
+    }
+
+    void pre_flush_cb(Caliper*, Channel* channel) {
+        auto ret = rocmtools_flush_data(m_session_id, m_buffer_id);
+        if (ret != ROCMTOOLS_STATUS_SUCCESS) {
+            print_rocm_error(channel, "rocmtools_flush_buffer()", ret);
+        }
     }
 
     void pre_finish_cb(Caliper* c, Channel* channel) {
@@ -216,12 +323,7 @@ class RocmService
             print_rocm_error(channel, "rocmtools_terminate_session()", ret);
         }
 
-        ret = rocmtools_flush_data(m_session_id, m_buffer_id);
-        if (ret != ROCMTOOLS_STATUS_SUCCESS) {
-            print_rocm_error(channel, "rocmtools_flush_buffer()", ret);
-        }
-
-        Log(1).stream() << channel->name() << ": rocmtools session terminated\n";
+        Log(1).stream() << channel->name() << ": rocmtools: session terminated\n";
     }
 
     void finish_cb(Caliper* c, Channel* channel) {
@@ -245,11 +347,19 @@ public:
             return;
         }
 
+        Log(2).stream() << channel->name() << ": rocmtools: using rocmtools version "
+            << rocmtools_version_major() << "."
+            << rocmtools_version_minor() << "\n";
+
         s_instance = new RocmService(c, channel);
 
         channel->events().post_init_evt.connect(
             [](Caliper* c, Channel* channel){
                 s_instance->post_init_cb(c, channel);
+            });
+        channel->events().pre_flush_evt.connect(
+            [](Caliper* c, Channel* channel, SnapshotView){
+                s_instance->pre_flush_cb(c, channel);
             });
         channel->events().pre_finish_evt.connect(
             [](Caliper* c, Channel* channel){
