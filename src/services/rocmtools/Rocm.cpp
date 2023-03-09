@@ -21,7 +21,7 @@
 #include <mutex>
 #include <map>
 
-#include <cassert>
+#include <cstring>
 
 using namespace cali;
 
@@ -56,6 +56,7 @@ const char* activity_domain_name(rocmtools_tracer_activity_domain_t id)
 class RocmService
 {
     Attribute m_domain_attr;
+    Attribute m_activity_attr;
     Attribute m_api_attr;
     Attribute m_kernel_name_attr;
     Attribute m_begin_ts_attr;
@@ -63,18 +64,25 @@ class RocmService
     Attribute m_duration_attr;
     Attribute m_host_timestamp_attr;
     Attribute m_host_duration_attr;
+    Attribute m_host_starttime_attr;
     Attribute m_correlation_attr;
-
-    Channel*  m_channel;
 
     rocmtools_session_id_t m_session_id;
     rocmtools_buffer_id_t  m_buffer_id;
+
+    std::map< uint64_t, std::vector<Entry> > m_correlation_map;
+    std::mutex m_correlation_map_mutex;
+
+    Channel*  m_channel;
 
     static RocmService* s_instance;
 
     void create_attributes(Caliper* c) {
         m_domain_attr =
             c->create_attribute("rocm.domain", CALI_TYPE_STRING,
+                CALI_ATTR_DEFAULT | CALI_ATTR_SKIP_EVENTS);
+        m_activity_attr =
+            c->create_attribute("rocm.activity", CALI_TYPE_STRING,
                 CALI_ATTR_DEFAULT | CALI_ATTR_SKIP_EVENTS);
         m_api_attr =
             c->create_attribute("rocm.hip.api", CALI_TYPE_STRING,
@@ -106,48 +114,85 @@ class RocmService
                                 CALI_ATTR_ASVALUE      |
                                 CALI_ATTR_SKIP_EVENTS  |
                                 CALI_ATTR_AGGREGATABLE);
+        m_host_starttime_attr =
+            c->create_attribute("rocm.host.starttime", CALI_TYPE_UINT,
+                                CALI_ATTR_SCOPE_PROCESS |
+                                CALI_ATTR_SKIP_EVENTS);
     }
 
-    void handle_sync_api_trace_record(rocmtools_record_tracer_t record, rocmtools_session_id_t session) {
-        if (record.domain == ACTIVITY_DOMAIN_HIP_API) {
+    void push_correlation(uint64_t id, std::vector<Entry>&& ctx) {
+        std::lock_guard<std::mutex>
+            g(m_correlation_map_mutex);
+
+        m_correlation_map[id] = ctx;
+    }
+
+    std::vector<Entry> pop_correlation(uint64_t id) {
+        std::vector<Entry> ret;
+
+        std::lock_guard<std::mutex>
+            g(m_correlation_map_mutex);
+
+        auto it = m_correlation_map.find(id);
+
+        if (it != m_correlation_map.end()) {
+            ret = it->second;
+            m_correlation_map.erase(it);
+        }
+
+        return ret;
+    }
+
+    void handle_sync_api_trace_record(rocmtools_record_tracer_t trec, rocmtools_session_id_t session) {
+        if (trec.domain == ACTIVITY_DOMAIN_HIP_API) {
             size_t function_name_size = 0;
             rocmtools_query_hip_tracer_api_data_info_size(
-                session, ROCMTOOLS_HIP_FUNCTION_NAME, record.api_data_handle,
-                record.operation_id, &function_name_size);
+                session, ROCMTOOLS_HIP_FUNCTION_NAME, trec.api_data_handle,
+                trec.operation_id, &function_name_size);
 
             if (function_name_size > 1) {
                 char* cptr = nullptr;
                 rocmtools_query_hip_tracer_api_data_info(
-                    session, ROCMTOOLS_HIP_FUNCTION_NAME, record.api_data_handle,
-                    record.operation_id, &cptr);
+                    session, ROCMTOOLS_HIP_FUNCTION_NAME, trec.api_data_handle,
+                    trec.operation_id, &cptr);
 
-                uint64_t duration = record.timestamps.end.value - record.timestamps.begin.value;
+                // skip __hipPush/PopCallConfiguration calls
+                if (cptr && strncmp(cptr, "__hip", 5) == 0)
+                    return;
+
+                uint64_t duration = trec.timestamps.end.value - trec.timestamps.begin.value;
 
                 const Attribute attr[5] = {
+                    m_domain_attr,
                     m_api_attr,
                     m_begin_ts_attr,
                     m_end_ts_attr,
-                    m_duration_attr,
-                    m_correlation_attr
+                    m_duration_attr
                 };
                 const Variant data[5] = {
+                    Variant(CALI_TYPE_STRING, "hip_api", 7),
                     Variant(CALI_TYPE_STRING, cptr, function_name_size),
-                    cali_make_variant_from_uint(record.timestamps.begin.value),
-                    cali_make_variant_from_uint(record.timestamps.end.value),
-                    cali_make_variant_from_uint(duration),
-                    cali_make_variant_from_uint(record.correlation_id.value)
+                    cali_make_variant_from_uint(trec.timestamps.begin.value),
+                    cali_make_variant_from_uint(trec.timestamps.end.value),
+                    cali_make_variant_from_uint(duration)
                 };
 
-                FixedSizeSnapshotRecord<5> rec;
+                FixedSizeSnapshotRecord<64> rec;
                 Caliper c;
 
+                c.pull_context(m_channel, CALI_SCOPE_THREAD | CALI_SCOPE_PROCESS, rec.builder());
+                auto view = rec.view();
+                push_correlation(trec.correlation_id.value,
+                    std::vector<Entry> { view.begin(), view.end() });
+
                 c.make_record(5, attr, data, rec.builder());
-                c.push_snapshot(m_channel, rec.view());
+                m_channel->events().process_snapshot(&c, m_channel, SnapshotView(), rec.view());
             }
         }
     }
 
     void handle_trace_record(rocmtools_record_tracer_t trec, rocmtools_session_id_t session) {
+        std::string activity_name;
         std::string kernel_name;
         std::string function_name;
 
@@ -156,6 +201,13 @@ class RocmService
 
             if (name)
                 kernel_name = util::demangle(name);
+
+            char* cptr = nullptr;
+            rocmtools_query_hip_tracer_api_data_info(
+                    session, ROCMTOOLS_HIP_ACTIVITY_NAME, trec.api_data_handle,
+                    trec.operation_id, &cptr);
+            if (cptr)
+                activity_name = cptr;
         }
 
         if (trec.domain == ACTIVITY_DOMAIN_HIP_API) {
@@ -176,17 +228,19 @@ class RocmService
         Caliper c;
 
         cali::Node* node = nullptr;
-        const char* activity_name = activity_domain_name(trec.domain);
+        const char* domain_name = activity_domain_name(trec.domain);
 
-        if (activity_name)
-            node = c.make_tree_entry(m_domain_attr, Variant(activity_name));
+        if (domain_name)
+            node = c.make_tree_entry(m_domain_attr, Variant(domain_name));
+        if (activity_name.size() > 0)
+            node = c.make_tree_entry(m_activity_attr, Variant(activity_name.c_str()), node);
         if (function_name.size() > 0)
-            node = c.make_tree_entry(m_api_attr, Variant(function_name.c_str()));
+            node = c.make_tree_entry(m_api_attr, Variant(function_name.c_str()), node);
         if (kernel_name.size() > 0)
             node = c.make_tree_entry(m_kernel_name_attr, Variant(kernel_name.c_str()), node);
 
         if (node) {
-            FixedSizeSnapshotRecord<5> rec;
+            FixedSizeSnapshotRecord<64> rec;
 
             rec.builder().append(Entry(node));
 
@@ -195,7 +249,9 @@ class RocmService
             rec.builder().append(m_begin_ts_attr, cali_make_variant_from_uint(trec.timestamps.begin.value));
             rec.builder().append(m_end_ts_attr, cali_make_variant_from_uint(trec.timestamps.end.value));
             rec.builder().append(m_duration_attr, cali_make_variant_from_uint(duration));
-            rec.builder().append(m_correlation_attr, cali_make_variant_from_uint(trec.correlation_id.value));
+
+            auto ctx = pop_correlation(trec.correlation_id.value);
+            rec.builder().append(ctx.size(), ctx.data());
 
             m_channel->events().process_snapshot(&c, m_channel, SnapshotView(), rec.view());
         }
@@ -256,7 +312,7 @@ class RocmService
 
         ret = rocmtools_set_api_trace_sync_callback(m_session_id, api_filter_id,
                 [](rocmtools_record_tracer_t rec, rocmtools_session_id_t session){
-                    s_instance->handle_trace_record(rec, session);
+                    s_instance->handle_sync_api_trace_record(rec, session);
                 });
         if (ret != ROCMTOOLS_STATUS_SUCCESS) {
             print_rocm_error(channel, "rocmtools_set_api_trace_sync_callback()", ret);
@@ -301,6 +357,12 @@ class RocmService
             print_rocm_error(channel, "rocmtools_start_session()", ret);
             return;
         }
+
+        rocmtools_timestamp_t timestamp { 0 };
+        rocmtools_get_timestamp(&timestamp);
+
+        c->set(m_host_starttime_attr, cali_make_variant_from_uint(timestamp.value));
+        c->set(m_host_timestamp_attr, cali_make_variant_from_uint(timestamp.value));
 
         channel->events().snapshot.connect(
             [](Caliper* c, Channel*, int, SnapshotView, SnapshotBuilder& rec){
