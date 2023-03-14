@@ -25,6 +25,16 @@
 
 using namespace cali;
 
+#define CALL_ROCM(call, msg)                \
+    do {                                         \
+        auto ret = call;                         \
+        if (ret != ROCMTOOLS_STATUS_SUCCESS) {   \
+            cali::Log(0).stream() << msg << ": " \
+                << rocmtools_error_string(ret);  \
+            return;                              \
+        }                                        \
+    } while (false)
+
 namespace
 {
 
@@ -94,7 +104,7 @@ class RocmService
             c->create_attribute("rocm.activity", CALI_TYPE_STRING,
                 CALI_ATTR_DEFAULT | CALI_ATTR_SKIP_EVENTS);
         m_api_attr =
-            c->create_attribute("rocm.hip.api", CALI_TYPE_STRING,
+            c->create_attribute("rocm.api", CALI_TYPE_STRING,
                 CALI_ATTR_DEFAULT | CALI_ATTR_SKIP_EVENTS);
         m_kernel_name_attr =
             c->create_attribute("rocm.kernel.name", CALI_TYPE_STRING,
@@ -281,16 +291,13 @@ class RocmService
     }
 
     void init_api_tracing(Channel* channel) {
-        auto ret = rocmtools_create_buffer(m_session_id,
-                    [](const rocmtools_record_header_t* record, const rocmtools_record_header_t* end_record,
-                    rocmtools_session_id_t session_id, rocmtools_buffer_id_t buffer_id) {
-                        s_instance->flush_records(record, end_record, session_id, buffer_id);
-                    },
-                    0x800000, &m_buffer_id);
-        if (ret != ROCMTOOLS_STATUS_SUCCESS) {
-            print_rocm_error(channel, "rocmtools_create_buffer()", ret);
-            return;
-        }
+        CALL_ROCM(rocmtools_create_buffer(m_session_id,
+            [](const rocmtools_record_header_t* record, const rocmtools_record_header_t* end_record,
+                rocmtools_session_id_t session_id, rocmtools_buffer_id_t buffer_id) {
+                    s_instance->flush_records(record, end_record, session_id, buffer_id);
+                },
+            0x800000, &m_buffer_id),
+            "rocmtools_create_buffer()");
 
         rocmtools_tracer_activity_domain_t filters[2] = {
             ACTIVITY_DOMAIN_HIP_API,
@@ -310,39 +317,25 @@ class RocmService
         }
 
         rocmtools_filter_id_t api_filter_id;
-        ret = rocmtools_create_filter(m_session_id, ROCMTOOLS_API_TRACE,
-            f_data, f_count, &api_filter_id, rocmtools_filter_property_t {});
-        if (ret != ROCMTOOLS_STATUS_SUCCESS) {
-            print_rocm_error(channel, "rocmtools_create_filter()", ret);
-            return;
-        }
+        CALL_ROCM(rocmtools_create_filter(m_session_id, ROCMTOOLS_API_TRACE,
+            f_data, f_count, &api_filter_id, rocmtools_filter_property_t {}),
+            "rocmtools_create_filter(ROCMTOOLS_API_TRACE)");
+        CALL_ROCM(rocmtools_set_filter_buffer(m_session_id, api_filter_id, m_buffer_id),
+            "rocmtools_set_filter_buffer()");
 
-        ret = rocmtools_set_filter_buffer(m_session_id, api_filter_id, m_buffer_id);
-        if (ret != ROCMTOOLS_STATUS_SUCCESS) {
-            print_rocm_error(channel, "rocmtools_set_filter_buffer()", ret);
-            return;
-        }
-
-        ret = rocmtools_set_api_trace_sync_callback(m_session_id, api_filter_id,
-                [](rocmtools_record_tracer_t rec, rocmtools_session_id_t session){
-                    s_instance->handle_sync_api_trace_record(rec, session);
-                });
-        if (ret != ROCMTOOLS_STATUS_SUCCESS) {
-            print_rocm_error(channel, "rocmtools_set_api_trace_sync_callback()", ret);
-            return;
-        }
+        CALL_ROCM(rocmtools_set_api_trace_sync_callback(m_session_id, api_filter_id,
+            [](rocmtools_record_tracer_t rec, rocmtools_session_id_t session){
+                s_instance->handle_sync_api_trace_record(rec, session);
+            }),
+            "rocmtools_set_api_trace_sync_callback()");
 
         if (m_trace_activities) {
             rocmtools_filter_id_t kernel_filter_id;
-            ret = rocmtools_create_filter(m_session_id, ROCMTOOLS_DISPATCH_TIMESTAMPS_COLLECTION,
-                    rocmtools_filter_data_t {}, 0, &kernel_filter_id, rocmtools_filter_property_t {});
-            if (ret != ROCMTOOLS_STATUS_SUCCESS) {
-                print_rocm_error(channel, "rocmtools_create_filter", ret);
-            }
-            ret = rocmtools_set_filter_buffer(m_session_id, kernel_filter_id, m_buffer_id);
-            if (ret != ROCMTOOLS_STATUS_SUCCESS) {
-                print_rocm_error(channel, "rocmtools_filter_set_buffer", ret);
-            }
+            CALL_ROCM(rocmtools_create_filter(m_session_id, ROCMTOOLS_DISPATCH_TIMESTAMPS_COLLECTION,
+                rocmtools_filter_data_t {}, 0, &kernel_filter_id, rocmtools_filter_property_t {}),
+                "rocmtools_create_filter(ROCMTOOLS_DISPATCH_TIMESTAMP_COLLECTION)");
+            CALL_ROCM(rocmtools_set_filter_buffer(m_session_id, kernel_filter_id, m_buffer_id),
+                "rocmtools_set_filter_buffer(kernel_filter)");
         }
 
         Log(1).stream() << channel->name() << ": rocmtools: API tracing session initialized\n";
@@ -435,15 +428,7 @@ public:
     static const char* s_spec;
 
     static void register_rocmtools(Caliper* c, Channel* channel) {
-        auto ret = rocmtools_initialize();
-        if (ret != ROCMTOOLS_STATUS_SUCCESS) {
-            print_rocm_error(channel, "rocmtools_initialize()", ret);
-            return;
-        }
-
-        Log(2).stream() << channel->name() << ": rocmtools: using rocmtools version "
-            << rocmtools_version_major() << "."
-            << rocmtools_version_minor() << "\n";
+        CALL_ROCM(rocmtools_initialize(), "rocmtools_initialize()");
 
         s_instance = new RocmService(c, channel);
 
@@ -466,7 +451,9 @@ public:
                 s_instance = nullptr;
             });
 
-        Log(1).stream() << channel->name() << ": rocmtools service initialized\n";
+        Log(1).stream() << channel->name() << ": Registered rocmtools service."
+            << " Using rocmtools " << rocmtools_version_major()
+            << "." << rocmtools_version_minor() << std::endl;
     }
 };
 
