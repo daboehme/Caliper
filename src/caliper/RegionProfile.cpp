@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2022, Lawrence Livermore National Security, LLC.  
+// Copyright (c) 2015-2022, Lawrence Livermore National Security, LLC.
 // See top-level LICENSE file for details.
 
 #include "caliper/RegionProfile.h"
@@ -7,6 +7,8 @@
 #include "caliper/reader/CalQLParser.h"
 #include "caliper/reader/FlatExclusiveRegionProfile.h"
 #include "caliper/reader/FlatInclusiveRegionProfile.h"
+#include "caliper/reader/NestedExclusiveRegionProfile.h"
+#include "caliper/reader/NestedInclusiveRegionProfile.h"
 
 #include "caliper/common/Log.h"
 
@@ -47,8 +49,7 @@ RegionProfile::exclusive_region_times(const std::string& region_type)
     if (channel())
         c.flush(channel(), SnapshotView(), rp);
     else
-        Log(1).stream() << "RegionProfile::exclusive_region_times(): channel is not enabled"
-                        << std::endl;
+        Log(1).stream() << "RegionProfile::exclusive_region_times(): channel is not enabled\n";
 
     return rp.result();
 }
@@ -63,8 +64,35 @@ RegionProfile::inclusive_region_times(const std::string& region_type)
     if (channel())
         c.flush(channel(), SnapshotView(), rp);
     else
-        Log(1).stream() << "RegionProfile::inclusive_region_times(): channel is not enabled"
-                        << std::endl;
+        Log(1).stream() << "RegionProfile::inclusive_region_times(): channel is not enabled\n";
+
+    return rp.result();
+}
+
+RegionProfile::region_profile_t
+RegionProfile::exclusive_path_profile()
+{
+    Caliper c;
+    NestedExclusiveRegionProfile rp(c, "sum#time.duration");
+
+    if (channel())
+        c.flush(channel(), SnapshotView(), rp);
+    else
+        Log(1).stream() << "RegionProfile::exclusive_path_profile(): channel is not enabled\n";
+
+    return rp.result();
+}
+
+RegionProfile::region_profile_t
+RegionProfile::inclusive_path_profile()
+{
+    Caliper c;
+    NestedInclusiveRegionProfile rp(c, "sum#time.duration");
+
+    if (channel())
+        c.flush(channel(), SnapshotView(), rp);
+    else
+        Log(1).stream() << "RegionProfile::inclusive_path_profile(): channel is not enabled\n";
 
     return rp.result();
 }
@@ -73,7 +101,7 @@ void
 RegionProfile::clear()
 {
     Channel* chn = channel();
-    
+
     if (chn)
         Caliper::instance().clear(chn);
 }
