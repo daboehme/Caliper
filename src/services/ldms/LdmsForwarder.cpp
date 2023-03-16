@@ -31,7 +31,7 @@ std::ostream& write_ldms_record(std::ostream& os, int mpi_rank, RegionProfile& p
     double total_time = 0;
 
     std::tie(region_times, std::ignore, total_time) =
-        profile.inclusive_region_times();
+        profile.inclusive_path_profile();
 
     double unix_ts = 1e-6 * std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
@@ -44,7 +44,7 @@ std::ostream& write_ldms_record(std::ostream& os, int mpi_rank, RegionProfile& p
         os << "{ \"timestamp\": " << std::fixed << unix_ts
            << ", \"duration\": "  << std::fixed << p.second;
 
-        util::write_esc_string(os << ", \"region\": \"", p.first) << "\"";
+        util::write_esc_string(os << ", \"path\": \"", p.first) << "\"";
 
         if (mpi_rank >= 0)
             os << ", \"rank\": " << mpi_rank;
