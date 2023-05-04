@@ -752,7 +752,7 @@ const char* builtin_option_specs = R"json(
      "config"      : { "CALI_UMPIRE_ALLOCATOR_FILTER": "{}" }
     },
     {
-     "name"        : "mem.highwatermark",
+     "name"        : "malloc.highwatermark",
      "description" : "Report memory high-water mark",
      "type"        : "bool",
      "category"    : "metric",
@@ -769,6 +769,34 @@ const char* builtin_option_specs = R"json(
        },
        { "level"   : "cross",
          "select"  : [ { "expr": "max(max#mem.highwatermark)", "as": "Allocated MB", "unit": "MB" } ]
+       }
+     ]
+    },
+    {
+     "name"        : "mem.stats",
+     "description" : "Report process memory stats",
+     "type"        : "bool",
+     "category"    : "metric",
+     "services"    : [ "memstat" ],
+     "query"  :
+     [
+       { "level"   : "local",
+         "let"     :
+           [ "mem.vmsize = first(max#memstat.vmsize,memstat.vmsize)",
+             "mem.data = first(max#memstat.data,memstat.data)"
+           ],
+         "select"  :
+           [
+            { "expr": "max(mem.vmsize)", "as": "VmSize kB", "unit": "kB" },
+            { "expr": "max(mem.data)", "as": "Data kB", "unit": "kB" }
+           ]
+       },
+       { "level"   : "cross",
+         "select"  :
+           [
+            { "expr": "max(max#mem.vmsize)", "as": "VmSize kB (max)", "unit": "kB" },
+            { "expr": "max(max#mem.data)", "as": "Data kB (max)", "unit": "kB" }
+           ]
        }
      ]
     },

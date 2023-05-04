@@ -63,24 +63,24 @@ class MemstatService
 
     void finish_cb(Caliper*, Channel* channel) {
         if (m_failed > 0)
-            Log(0).stream() << channel->name() 
+            Log(0).stream() << channel->name()
                             << ": memstat: failed to read /proc/self/statm "
                             << m_failed << " times\n";
     }
 
-    MemstatService(Caliper* c, int fd) 
+    MemstatService(Caliper* c, int fd)
         : m_fd     { fd },
           m_failed { 0  }
     {
         m_vmsize_attr =
-            c->create_attribute("memstat.vmsize", CALI_TYPE_UINT, 
-                CALI_ATTR_SCOPE_PROCESS | 
-                CALI_ATTR_ASVALUE       | 
+            c->create_attribute("memstat.vmsize", CALI_TYPE_UINT,
+                CALI_ATTR_SCOPE_PROCESS |
+                CALI_ATTR_ASVALUE       |
                 CALI_ATTR_AGGREGATABLE);
         m_vmdata_attr =
-            c->create_attribute("memstat.data", CALI_TYPE_UINT, 
-                CALI_ATTR_SCOPE_PROCESS | 
-                CALI_ATTR_ASVALUE       | 
+            c->create_attribute("memstat.data", CALI_TYPE_UINT,
+                CALI_ATTR_SCOPE_PROCESS |
+                CALI_ATTR_ASVALUE       |
                 CALI_ATTR_AGGREGATABLE);
     }
 
@@ -112,7 +112,7 @@ public:
 };
 
 const char* memstat_spec = R"json(
-{   
+{
     "name"        : "memstat",
     "description" : "Record process memory info from /proc/self/statm"
 }
