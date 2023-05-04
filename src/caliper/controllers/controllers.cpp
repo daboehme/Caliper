@@ -773,8 +773,8 @@ const char* builtin_option_specs = R"json(
      ]
     },
     {
-     "name"        : "mem.stats",
-     "description" : "Report process memory stats",
+     "name"        : "mem.pages",
+     "description" : "Memory pages used via /proc/self/statm",
      "type"        : "bool",
      "category"    : "metric",
      "services"    : [ "memstat" ],
@@ -783,19 +783,22 @@ const char* builtin_option_specs = R"json(
        { "level"   : "local",
          "let"     :
            [ "mem.vmsize = first(max#memstat.vmsize,memstat.vmsize)",
+             "mem.vmrss = first(max#memstat.vmrss,memstat.vmrss)",
              "mem.data = first(max#memstat.data,memstat.data)"
            ],
          "select"  :
            [
-            { "expr": "max(mem.vmsize)", "as": "VmSize kB", "unit": "kB" },
-            { "expr": "max(mem.data)", "as": "Data kB", "unit": "kB" }
+            { "expr": "max(mem.vmsize)", "as": "VmSize", "unit": "pages" },
+            { "expr": "max(mem.vmrss)", "as": "VmRSS", "unit": "pages" },
+            { "expr": "max(mem.data)", "as": "Data", "unit": "pages" }
            ]
        },
        { "level"   : "cross",
          "select"  :
            [
-            { "expr": "max(max#mem.vmsize)", "as": "VmSize kB (max)", "unit": "kB" },
-            { "expr": "max(max#mem.data)", "as": "Data kB (max)", "unit": "kB" }
+            { "expr": "max(max#mem.vmsize)", "as": "VmSize (max)", "unit": "pages" },
+            { "expr": "max(max#mem.vmrss)", "as": "VmRSS (max)", "unit": "pages" },
+            { "expr": "max(max#mem.data)", "as": "Data (max)", "unit": "pages" }
            ]
        }
      ]

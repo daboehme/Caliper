@@ -18,9 +18,9 @@ using namespace cali;
 namespace
 {
 
-std::pair<uint64_t, uint64_t> parse_statm(const char* buf, ssize_t max)
+inline std::array<uint64_t, 6> parse_statm(const char* buf, ssize_t max)
 {
-    uint64_t numbers[7] = { 0, 0, 0, 0, 0, 0, 0 };
+    std::array<uint64_t, 6> numbers = { 0, 0, 0, 0, 0, 0 };
     int nn = 0;
 
     for (ssize_t n = 0; n < max && nn < 6; ++n) {
@@ -31,12 +31,13 @@ std::pair<uint64_t, uint64_t> parse_statm(const char* buf, ssize_t max)
             ++nn;
     }
 
-    return std::make_pair(numbers[0], numbers[5]);
+    return numbers;
 }
 
 class MemstatService
 {
     Attribute m_vmsize_attr;
+    Attribute m_vmrss_attr;
     Attribute m_vmdata_attr;
 
     int       m_fd;
@@ -55,10 +56,11 @@ class MemstatService
             return;
         }
 
-        auto p = parse_statm(buf, ret);
+        auto val = parse_statm(buf, ret);
 
-        rec.append(m_vmsize_attr, cali_make_variant_from_uint(p.first));
-        rec.append(m_vmdata_attr, cali_make_variant_from_uint(p.second));
+        rec.append(m_vmsize_attr, cali_make_variant_from_uint(val[0]));
+        rec.append(m_vmrss_attr,  cali_make_variant_from_uint(val[1]));
+        rec.append(m_vmdata_attr, cali_make_variant_from_uint(val[5]));
     }
 
     void finish_cb(Caliper*, Channel* channel) {
@@ -77,6 +79,11 @@ class MemstatService
                 CALI_ATTR_SCOPE_PROCESS |
                 CALI_ATTR_ASVALUE       |
                 CALI_ATTR_AGGREGATABLE);
+        m_vmrss_attr =
+            c->create_attribute("memstat.vmrss", CALI_TYPE_UINT,
+                CALI_ATTR_SCOPE_PROCESS |
+                CALI_ATTR_ASVALUE       |
+                CALI_ATTR_AGGREGATABLE);
         m_vmdata_attr =
             c->create_attribute("memstat.data", CALI_TYPE_UINT,
                 CALI_ATTR_SCOPE_PROCESS |
@@ -87,7 +94,7 @@ class MemstatService
 public:
 
     static void memstat_register(Caliper* c, Channel* channel) {
-        int fd = open("/proc/self/statm", O_RDONLY);
+        int fd = open("/proc/self/statm", O_RDONLY | O_NONBLOCK);
 
         if (fd < 0) {
             Log(0).perror(errno, "open(\"/proc/self/statm\")");
