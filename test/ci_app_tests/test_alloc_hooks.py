@@ -80,8 +80,8 @@ class CaliperAllocServiceTest(unittest.TestCase):
         self.helper_test_hook('realloc')
 
 
-    def test_mem_highwatermark_option(self):
-        target_cmd = [ './ci_test_macros', '10', 'hatchet-region-profile,use.mpi=false,output=stdout,output.format=json,mem.highwatermark' ]
+    def test_malloc_highwatermark_option(self):
+        target_cmd = [ './ci_test_macros', '10', 'hatchet-region-profile,use.mpi=false,output=stdout,output.format=json,malloc.highwatermark' ]
 
         caliper_config = {
             'CALI_LOG_VERBOSITY'     : '0'
