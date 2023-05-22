@@ -44,10 +44,7 @@ class MemstatService
 
     unsigned  m_failed;
 
-    void snapshot_cb(Caliper*, int scopes, SnapshotBuilder& rec) {
-        if (!(scopes & CALI_SCOPE_PROCESS))
-            return;
-
+    void snapshot_cb(Caliper*, SnapshotBuilder& rec) {
         char buf[80];
         ssize_t ret = pread(m_fd, buf, sizeof(buf), 0);
 
@@ -104,8 +101,8 @@ public:
         MemstatService* instance = new MemstatService(c, fd);
 
         channel->events().snapshot.connect(
-            [instance](Caliper* c, Channel*, int scopes, SnapshotView, SnapshotBuilder& rec){
-                instance->snapshot_cb(c, scopes, rec);
+            [instance](Caliper* c, Channel*, SnapshotView, SnapshotBuilder& rec){
+                instance->snapshot_cb(c, rec);
             });
         channel->events().finish_evt.connect(
             [instance](Caliper* c, Channel* channel){
