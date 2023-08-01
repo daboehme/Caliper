@@ -331,6 +331,11 @@ endif()
 set(THREADS_PREFER_PTHREAD_FLAG On)
 find_package(Threads REQUIRED)
 
+if (CMAKE_USE_PTHREADS_INIT)
+  set(CALIPER_HAVE_PTHREADS TRUE)
+  set(CALIPER_pthreads_CMAKE_MSG "Yes")
+endif()
+
 if (WITH_OMPT)
     set(CALIPER_HAVE_OMPT TRUE)
     set(CALIPER_OMPT_CMAKE_MSG "Yes")
@@ -560,6 +565,7 @@ set(CALIPER_MODULES
   Fortran
   cpuinfo
   memusage
+  pthreads
   adiak
   GOTCHA
   PAPI

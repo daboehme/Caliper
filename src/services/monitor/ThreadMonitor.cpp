@@ -2,6 +2,7 @@
 // See top-level LICENSE file for details.
 
 #include "caliper/CaliperService.h"
+#include "../Services.h"
 
 #include "caliper/Caliper.h"
 #include "caliper/SnapshotRecord.h"
@@ -12,36 +13,50 @@
 #include <pthread.h>
 #include <time.h>
 
+#include <array>
+#include <chrono>
+#include <cmath>
+
 using namespace cali;
 
 namespace
 {
 
+inline double get_timestamp()
+{
+    return 1e-6 * std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
 class ThreadMonitor
 {
-    static const ConfigSet::Entry s_configdata[];
-
     pthread_t monitor_thread;
     bool      thread_running;
 
     Channel*  channel;
 
-    time_t    sleep_sec;
-    long      sleep_nsec;
+    time_t    m_sleep_sec;
+    long      m_sleep_nsec;
 
-    Attribute monitor_attr;
+    Attribute m_snapshot_attr;
+    Attribute m_timestamp_attr;
 
-    int       num_events;
+    unsigned  m_num_snapshots;
 
     void snapshot() {
         Caliper c;
-        Entry   data(monitor_attr, cali_make_variant_from_int(num_events++));
-        c.push_snapshot(channel, SnapshotView(1, &data));
+
+        std::array<Entry, 2> info = {
+            Entry(m_snapshot_attr, cali_make_variant_from_uint(m_num_snapshots++)),
+            Entry(m_timestamp_attr, cali_make_variant_from_double(get_timestamp()))
+        };
+
+        c.push_snapshot(channel, SnapshotView(info.size(), info.data()));
     }
 
     // the main monitor loop
     void monitor() {
-        struct timespec req { sleep_sec, sleep_nsec };
+        struct timespec req { m_sleep_sec, m_sleep_nsec };
 
         while (true) {
             struct timespec rem = req;
@@ -52,7 +67,7 @@ class ThreadMonitor
             } while (ret == EINTR);
 
             if (ret != 0) {
-                Log(0).perror(errno, "monitor: nanosleep(): ");
+                Log(0).perror(errno, "thread_monitor: nanosleep(): ");
                 break;
             }
 
@@ -71,25 +86,27 @@ class ThreadMonitor
 
     bool start() {
         if (pthread_create(&monitor_thread, nullptr, thread_fn, this) != 0) {
-            Log(0).stream() << channel->name() << ": monitor(): pthread_create() failed"
-                            << std::endl;
+            Log(0).stream() << channel->name()
+                << ": thread_monitor(): pthread_create() failed\n";
             return false;
         }
 
-        Log(1).stream() << channel->name() << ": monitor: monitoring thread initialized" << std::endl;
+        Log(1).stream() << channel->name()
+            << ": thread_monitor: monitoring thread initialized\n";
+
         thread_running = true;
         return true;
     }
 
     void cancel() {
-        Log(2).stream() << channel->name() << ": monitor: cancelling monitoring thread" << std::endl;
+        Log(2).stream() << channel->name() << ": thread_monitor: cancelling monitoring thread\n";
 
         if (pthread_cancel(monitor_thread) != 0)
-            Log(0).stream() << channel->name() << ": monitor: pthread_cancel() failed" << std::endl;
+            Log(0).stream() << channel->name() << ": thread_monitor: pthread_cancel() failed\n";
 
         pthread_join(monitor_thread, nullptr);
 
-        Log(1).stream() << channel->name() << ": monitor: monitoring thread finished" << std::endl;
+        Log(1).stream() << channel->name() << ": thread_monitor: monitoring thread finished\n";
     }
 
     void post_init_cb() {
@@ -102,24 +119,39 @@ class ThreadMonitor
             cancel();
 
         Log(1).stream() << channel->name()
-                        << ": monitor: triggered " << num_events << " monitoring events"
-                        << std::endl;
+            << ": thread_monitor: triggered " << m_num_snapshots << " snapshots\n";
     }
 
     ThreadMonitor(Caliper* c, Channel* chn)
-        : thread_running(false), channel(chn), sleep_sec(2), sleep_nsec(0), num_events(0)
+        : thread_running(false),
+          channel(chn),
+          m_sleep_sec(1),
+          m_sleep_nsec(0),
+          m_num_snapshots(0)
         {
-            monitor_attr =
-                c->create_attribute("monitor.event", CALI_TYPE_INT,
-                                    CALI_ATTR_SCOPE_PROCESS |
-                                    CALI_ATTR_ASVALUE       |
+            m_snapshot_attr =
+                c->create_attribute("monitor.snapshot", CALI_TYPE_UINT,
+                                    CALI_ATTR_ASVALUE |
+                                    CALI_ATTR_SKIP_EVENTS);
+            m_timestamp_attr =
+                c->create_attribute("monitor.timestamp", CALI_TYPE_DOUBLE,
+                                    CALI_ATTR_ASVALUE |
                                     CALI_ATTR_SKIP_EVENTS);
 
-            sleep_sec =
-                channel->config().init("monitor", s_configdata).get("interval").to_uint();
+            ConfigSet config = services::init_config_from_spec(channel->config(), s_spec);
+
+            double sleep_val = fabs(config.get("time_interval").to_double());
+
+            m_sleep_sec = static_cast<time_t>(floor(sleep_val));
+            m_sleep_nsec = static_cast<long>((sleep_val - floor(sleep_val)) * 1e9);
+
+            Log(2).stream() << channel->name() << ": thread_monitor: sleep interval: "
+                << m_sleep_sec << " sec, " << m_sleep_nsec << " nsec.\n";
         }
 
 public:
+
+    static const char* s_spec;
 
     static void create(Caliper* c, Channel* channel) {
         ThreadMonitor* instance = new ThreadMonitor(c, channel);
@@ -134,26 +166,29 @@ public:
                 delete instance;
             });
 
-        Log(1).stream() << channel->name()
-                        << ": Registered thread_monitor service"
-                        << std::endl;
+        Log(1).stream() << channel->name() << ": Registered thread_monitor service\n";
     }
 
 };
 
-const ConfigSet::Entry ThreadMonitor::s_configdata[] = {
-    { "interval", CALI_TYPE_INT, "2",
-      "Monitor snapshot interval in seconds.",
-      "Monitor snapshot interval in seconds."
-    },
-    ConfigSet::Terminator
-};
+const char* ThreadMonitor::s_spec = R"json(
+{   "name": "thread_monitor",
+    "description": "Run a measurement thread triggering snapshots at regular intervals",
+    "config": [
+        {   "name"        : "time_interval",
+            "description" : "Length in seconds of the measurement interval",
+            "type"        : "double",
+            "value"       : "0.1"
+        }
+    ]
+}
+)json";
 
 } // namespace [anonymous]
 
 namespace cali
 {
 
-CaliperService thread_monitor_service { "thread_monitor", ::ThreadMonitor::create };
+CaliperService thread_monitor_service { ::ThreadMonitor::s_spec, ::ThreadMonitor::create };
 
 }
