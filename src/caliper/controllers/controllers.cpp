@@ -475,6 +475,21 @@ const char* builtin_option_specs = R"json(
      ]
     },
     {
+     "name"        : "cuda.gputime.variance",
+     "description" : "Report GPU time in CUDA activities",
+     "type"        : "bool",
+     "category"    : "metric",
+     "inherit"     : [ "cuda.gputime" ],
+     "query"  :
+     [
+       { "level"   : "cross", "select":
+         [
+           "variance(iscale#cupti.activity.duration) as \"Variance GPU time/rank\""
+         ]
+       }
+     ]
+    },
+    {
      "name"        : "rocm.gputime",
      "description" : "Report GPU time in AMD ROCm activities",
      "type"        : "bool",
@@ -496,6 +511,21 @@ const char* builtin_option_specs = R"json(
            "min(iscale#sum#rocm.activity.duration) as \"Min GPU time/rank\" unit sec",
            "max(iscale#sum#rocm.activity.duration) as \"Max GPU time/rank\" unit sec",
            "sum(iscale#sum#rocm.activity.duration) as \"Total GPU time\" unit sec"
+         ]
+       }
+     ]
+    },
+    {
+     "name"        : "rocm.gputime.variance",
+     "description" : "Report GPU time in ROCm activities",
+     "type"        : "bool",
+     "category"    : "metric",
+     "inherit"     : [ "rocm.gputime" ],
+     "query"  :
+     [
+       { "level"   : "cross", "select":
+         [
+           "variance(iscale#sum#rocm.activity.duration) as \"Variance GPU time/rank\""
          ]
        }
      ]
