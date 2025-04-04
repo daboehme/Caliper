@@ -1,10 +1,11 @@
 #include "caliper/reader/Aggregator.h"
-
 #include "caliper/reader/CaliperMetadataDB.h"
 
 #include "caliper/common/Node.h"
 
 #include <gtest/gtest.h>
+
+#include <algorithm>
 
 using namespace cali;
 
