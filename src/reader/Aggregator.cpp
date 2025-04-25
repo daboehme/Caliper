@@ -1493,20 +1493,21 @@ struct Aggregator::AggregatorImpl {
         // --- Aggregate
 
         for (size_t k = 0; k < entry->kernels.size(); ++k) {
-            entry->kernels[k]->aggregate(db, rec);
-
-            // for inclusive kernels, aggregate for all parent nodes as well
             if (entry->kernels[k]->config()->is_inclusive() && nodes.begin() != nonnested_begin) {
+                //   For inclusive operations, we only group by path nodes and disregard anything
+                // else in the group by spec. This way we always get a total inclusive result on
+                // each path node.
                 auto it = nodes.begin();
-
+                auto p_entry = get_aggregation_entry(it, nonnested_begin, std::vector<Entry>(), db);
+                p_entry->kernels[k]->aggregate(db, rec);
                 for (++it; it != nonnested_begin; ++it) {
-                    auto p_entry = get_aggregation_entry(it, nodes.end(), immediates, db);
-
+                    p_entry = get_aggregation_entry(it, nonnested_begin, std::vector<Entry>(), db);
                     if (!p_entry)
                         break;
-
                     p_entry->kernels[k]->parent_aggregate(db, rec);
                 }
+            } else {
+                entry->kernels[k]->aggregate(db, rec);
             }
         }
     }
