@@ -583,6 +583,7 @@ const char* builtin_gotcha_option_specs = R"json(
     max(max#alloc.region.highwatermark) as \"Mem HWM\",
     max(alloc.tally) as \"Alloc tMax\",
     sum(alloc.count) as \"Alloc count\",
+    min(min#alloc.size) as \"Min Bytes/alloc\",
     avg(avg#alloc.size) as \"Avg Bytes/alloc\",
     max(max#alloc.size) as \"Max Bytes/alloc\"",
   "cross":
@@ -590,6 +591,7 @@ const char* builtin_gotcha_option_specs = R"json(
     max(max#alloc.region.highwatermark) as \"Mem HWM\",
     max(max#alloc.tally) as \"Alloc tMax\",
     sum(sum#alloc.count) as \"Alloc count\",
+    min(min#alloc.size) as \"Min Bytes/alloc\",
     avg(avg#alloc.size) as \"Avg Bytes/alloc\",
     max(max#alloc.size) as \"Max Bytes/alloc\""
  }
