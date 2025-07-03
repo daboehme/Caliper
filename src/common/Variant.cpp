@@ -11,6 +11,10 @@
 #include "util/format_util.h"
 #include "util/parse_util.h"
 
+#if __cplusplus >= 201703L
+#define CALI_VARIANT_USE_TO_CHARS
+#endif
+
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
@@ -18,6 +22,11 @@
 #include <iomanip>
 #include <iterator>
 #include <sstream>
+
+#ifdef CALI_VARIANT_USE_TO_CHARS
+#include <charconv>
+#include <string_view>
+#endif
 
 using namespace cali;
 
@@ -155,10 +164,30 @@ std::ostream& Variant::write_cali(std::ostream& os)
     case CALI_TYPE_INV:
         break;
     case CALI_TYPE_INT:
+#ifdef CALI_VARIANT_USE_TO_CHARS
+        {
+            const std::size_t buf_size { 20 };
+            char buf[buf_size] {};
+            std::to_chars_result res = std::to_chars(buf, buf+buf_size, m_v.value.v_int);
+            if (res.ec == std::errc())
+                os.write(buf, res.ptr - buf);
+        }
+#else
         os << m_v.value.v_int;
+#endif
         break;
     case CALI_TYPE_DOUBLE:
+#ifdef CALI_VARIANT_USE_TO_CHARS
+        {
+            const std::size_t buf_size { 28 };
+            char buf[buf_size] {};
+            std::to_chars_result res = std::to_chars(buf, buf+buf_size, m_v.value.v_double, std::chars_format::scientific, 12);
+            if (res.ec == std::errc())
+                os.write(buf, res.ptr - buf);
+        }
+#else
         os << m_v.value.v_double;
+#endif
         break;
     case CALI_TYPE_UINT:
         util::write_uint64(os, m_v.value.v_uint);
