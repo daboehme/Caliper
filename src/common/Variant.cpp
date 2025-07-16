@@ -181,7 +181,7 @@ std::ostream& Variant::write_cali(std::ostream& os)
         {
             const std::size_t buf_size { 28 };
             char buf[buf_size] {};
-            std::to_chars_result res = std::to_chars(buf, buf+buf_size, m_v.value.v_double, std::chars_format::scientific, 12);
+            std::to_chars_result res = std::to_chars(buf, buf+buf_size, m_v.value.v_double, std::chars_format::general, 12);
             if (res.ec == std::errc())
                 os.write(buf, res.ptr - buf);
         }
